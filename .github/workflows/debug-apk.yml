@@ -1,0 +1,67 @@
+name: Debug APK
+
+# Builds the example app with every engine/backend (LiteRT-LM, MediaPipe,
+# built-in AI, ONNX, speech, SQLite + Qdrant RAG, agent, Qualcomm NPU) and
+# attaches it to a DRAFT pre-release. Drafts are visible only to repository
+# collaborators, so the build stays private. arm64 only: every native hook
+# ships android_arm64 alone.
+#
+# workflow_dispatch needs this file on the default branch; the push trigger
+# lets it run from a branch before then.
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - .github/workflows/debug-apk.yml
+
+permissions:
+  contents: write
+
+jobs:
+  build-debug-apk:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.47.0'
+          channel: 'stable'
+          cache: true
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+          cache: 'gradle'
+
+      - name: Install example dependencies
+        working-directory: packages/flutter_edge_ai/example
+        run: flutter pub get
+
+      - name: Cache Qualcomm QNN runtime
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/flutter_gemma/native/qnn
+          key: qnn-runtime-${{ hashFiles('packages/flutter_edge_ai_litertlm/lib/src/hook/qnn_runtime.dart') }}
+
+      - name: Build example APK (arm64)
+        working-directory: packages/flutter_edge_ai/example
+        run: flutter build apk --release --target-platform android-arm64
+
+      - name: Attach APK to a draft pre-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          short_sha="${GITHUB_SHA::7}"
+          apk="flutter_edge_ai_example-full-arm64-${short_sha}.apk"
+          cp packages/flutter_edge_ai/example/build/app/outputs/flutter-apk/app-release.apk "$apk"
+          sha256sum "$apk" > "$apk.sha256"
+          gh release create "debug-apk-${short_sha}" "$apk" "$apk.sha256" \
+            --draft --prerelease --target "$GITHUB_SHA" \
+            --title "Debug APK ${short_sha} (${GITHUB_REF_NAME})" \
+            --notes "Example app, all engines and backends, arm64-v8a. Release build signed with the debug key."
